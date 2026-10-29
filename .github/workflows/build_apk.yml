@@ -1,4 +1,4 @@
-name: Compilar APK Infinix2
+name: Compilar APK Infinix
 
 on:
   push:

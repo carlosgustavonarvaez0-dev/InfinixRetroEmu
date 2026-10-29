@@ -11,30 +11,205 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Generar estructura del proyecto
+        run: |
+          mkdir -p app/src/main/cpp
+          mkdir -p app/src/main/java/com/infinix/retroemu/core
+          mkdir -p app/src/main/java/com/infinix/retroemu/data
+          mkdir -p app/src/main/java/com/infinix/retroemu/ui
+          mkdir -p app/src/main/assets/cores
+
+          cat << 'EOF' > settings.gradle.kts
+          pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
+          dependencyResolutionManagement { repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS); repositories { google(); mavenCentral() } }
+          rootProject.name = "InfinixRetroEmu"
+          include(":app")
+          EOF
+
+          cat << 'EOF' > build.gradle.kts
+          plugins {
+              id("com.android.application") version "8.2.2" apply false
+              id("org.jetbrains.kotlin.android") version "1.9.22" apply false
+          }
+          EOF
+
+          cat << 'EOF' > app/build.gradle.kts
+          plugins {
+              id("com.android.application")
+              id("org.jetbrains.kotlin.android")
+          }
+          android {
+              namespace = "com.infinix.retroemu"
+              compileSdk = 34
+              defaultConfig {
+                  applicationId = "com.infinix.retroemu"
+                  minSdk = 29
+                  targetSdk = 34
+                  versionCode = 1
+                  versionName = "1.0.0"
+                  ndk { abiFilters.add("arm64-v8a") }
+                  externalNativeBuild { cmake { cppFlags("-std=c++20 -O3"); arguments("-DANDROID_STL=c++_shared") } }
+              }
+              buildFeatures { compose = true }
+              composeOptions { kotlinCompilerExtensionVersion = "1.5.10" }
+              externalNativeBuild { cmake { path = file("src/main/cpp/CMakeLists.txt"); version = "3.22.1" } }
+          }
+          dependencies {
+              val composeBom = platform("androidx.compose:compose-bom:2024.02.00")
+              implementation(composeBom)
+              implementation("androidx.compose.ui:ui")
+              implementation("androidx.compose.material3:material3")
+              implementation("androidx.activity:activity-compose:1.8.2")
+              implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.7.0")
+              implementation("androidx.documentfile:documentfile:1.0.1")
+          }
+          EOF
+
+          cat << 'EOF' > app/src/main/AndroidManifest.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.VIBRATE" />
+              <application android:allowBackup="true" android:label="Infinix RetroEmu" android:supportsRtl="true" android:theme="@android:style/Theme.Material.NoActionBar">
+                  <activity android:name=".MainActivity" android:exported="true" android:configChanges="orientation|screenSize">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          EOF
+
+          cat << 'EOF' > app/src/main/cpp/CMakeLists.txt
+          cmake_minimum_required(VERSION 3.22.1)
+          project("infinix_retro_engine")
+          include(FetchContent)
+          FetchContent_Declare(oboe GIT_REPOSITORY https://github.com/google/oboe.git GIT_TAG 1.8.0)
+          FetchContent_MakeAvailable(oboe)
+          find_library(log-lib log)
+          find_library(android-lib android)
+          find_library(vulkan-lib vulkan)
+          add_library(retro_engine SHARED native_bridge.cpp oboe_audio.cpp)
+          target_link_libraries(retro_engine ${log-lib} ${android-lib} ${vulkan-lib} oboe dl)
+          EOF
+
+          cat << 'EOF' > app/src/main/cpp/retro_shaders.hpp
+          #ifndef RETRO_SHADERS_HPP
+          #define RETRO_SHADERS_HPP
+          const char* FRAGMENT_SHADER_SOURCE = "#version 320 es\nvoid main(){}\n";
+          #endif
+          EOF
+
+          cat << 'EOF' > app/src/main/cpp/native_bridge.cpp
+          #include <jni.h>
+          #include <dlfcn.h>
+          #include <android/log.h>
+          extern "C" {
+          JNIEXPORT jboolean JNICALL Java_com_infinix_retroemu_core_LibretroWrapper_loadCoreAndGame(JNIEnv*, jobject, jstring, jstring) { return JNI_TRUE; }
+          JNIEXPORT void JNICALL Java_com_infinix_retroemu_core_LibretroWrapper_updateInputBitmask(JNIEnv*, jobject, jint) {}
+          JNIEXPORT void JNICALL Java_com_infinix_retroemu_core_LibretroWrapper_stepFrame(JNIEnv*, jobject, jboolean, jint) {}
+          JNIEXPORT void JNICALL Java_com_infinix_retroemu_core_LibretroWrapper_setShaderFilter(JNIEnv*, jobject, jint) {}
+          }
+          EOF
+
+          cat << 'EOF' > app/src/main/cpp/oboe_audio.cpp
+          #include <oboe/Oboe.h>
+          EOF
+
+          cat << 'EOF' > app/src/main/java/com/infinix/retroemu/core/LibretroWrapper.kt
+          package com.infinix.retroemu.core
+          object LibretroWrapper {
+              init { System.loadLibrary("retro_engine") }
+              external fun loadCoreAndGame(corePath: String, romPath: String): Boolean
+              external fun updateInputBitmask(bitmask: Int)
+              external fun stepFrame(isRewinding: Boolean, speedMultiplier: Int)
+              external fun setShaderFilter(filterType: Int)
+              const val BTN_B = 1; const val BTN_SELECT = 4; const val BTN_START = 8; const val BTN_UP = 16; const val BTN_DOWN = 32; const val BTN_LEFT = 64; const val BTN_RIGHT = 128; const val BTN_A = 256; const val BTN_L = 1024; const val BTN_R = 2048
+          }
+          EOF
+
+          cat << 'EOF' > app/src/main/java/com/infinix/retroemu/data/RomScanner.kt
+          package com.infinix.retroemu.data
+          import android.content.Context
+          import android.net.Uri
+          import androidx.documentfile.provider.DocumentFile
+          import com.infinix.retroemu.ui.ConsoleSystem
+          import kotlinx.coroutines.Dispatchers
+          import kotlinx.coroutines.withContext
+          data class RomItem(val id: String, val title: String, val fileUri: Uri, val system: ConsoleSystem, val isZipped: Boolean, val internalEntryName: String? = null)
+          class RomScanner(private val context: Context) {
+              suspend fun scanDirectory(directoryUri: Uri): List<RomItem> = withContext(Dispatchers.IO) {
+                  val found = mutableListOf<RomItem>()
+                  DocumentFile.fromTreeUri(context, directoryUri)?.listFiles()?.forEach { file ->
+                      val name = file.name ?: return@forEach
+                      val ext = name.substringAfterLast('.', "").lowercase()
+                      if (ext in listOf("nes", "gb", "gbc", "gba")) {
+                          found.add(RomItem(file.uri.toString(), name.substringBeforeLast('.'), file.uri, if(ext=="nes") ConsoleSystem.NES else if(ext=="gba") ConsoleSystem.GBA else ConsoleSystem.GB_GBC, false))
+                      }
+                  }
+                  found
+              }
+              suspend fun prepareRomForExecution(rom: RomItem): String = withContext(Dispatchers.IO) {
+                  val cacheFile = java.io.File(context.cacheDir, "rom.bin")
+                  context.contentResolver.openInputStream(rom.fileUri)?.use { input -> java.io.FileOutputStream(cacheFile).use { output -> input.copyTo(output) } }
+                  cacheFile.absolutePath
+              }
+          }
+          EOF
+
+          cat << 'EOF' > app/src/main/java/com/infinix/retroemu/ui/EmulatorScreen.kt
+          package com.infinix.retroemu.ui
+          import androidx.compose.material3.Text
+          import androidx.compose.runtime.Composable
+          enum class ConsoleSystem(val baseWidth: Int, val baseHeight: Int, val title: String) { NES(256, 240, "NES"), GB_GBC(160, 144, "GB"), GBA(240, 160, "GBA") }
+          @Composable
+          fun EmulatorScreen(system: ConsoleSystem, romTitle: String) { Text("Jugando: $romTitle") }
+          EOF
+
+          cat << 'EOF' > app/src/main/java/com/infinix/retroemu/ui/LibraryScreen.kt
+          package com.infinix.retroemu.ui
+          import android.net.Uri
+          import androidx.compose.material3.Text
+          import androidx.compose.runtime.Composable
+          @Composable
+          fun LibraryScreen(roms: List<RomItem>, lastPlayedRom: RomItem?, onSelectFolder: (Uri) -> Unit, onLaunchGame: (RomItem, Boolean) -> Unit) { Text("Biblioteca") }
+          EOF
+
+          cat << 'EOF' > app/src/main/java/com/infinix/retroemu/MainActivity.kt
+          package com.infinix.retroemu
+          import android.os.Bundle
+          import androidx.activity.ComponentActivity
+          import androidx.activity.compose.setContent
+          import androidx.compose.material3.Text
+          class MainActivity : ComponentActivity() {
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  setContent { Text("Infinix RetroEmu Listo") }
+              }
+          }
+          EOF
+
       - name: Configurar Java
         uses: actions/setup-java@v4
-        with:
-          distribution: 'temurin'
-          java-version: '17'
+        with: { distribution: 'temurin', java-version: '17' }
 
       - name: Configurar Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Crear estructura y descargar nucleos
+      - name: Configurar Gradle
+        uses: gradle/actions/setup-gradle@v3
+        with: { gradle-version: '8.5' }
+
+      - name: Descargar nucleos Libretro
         run: |
           mkdir -p app/src/main/assets/cores
           cd app/src/main/assets/cores
-          wget -q https://buildbot.libretro.com/nightly/android/latest/arm64-v8a/fceumm_libretro_android.so.zip
-          unzip -q fceumm_libretro_android.so.zip && rm fceumm_libretro_android.so.zip
-          wget -q https://buildbot.libretro.com/nightly/android/latest/arm64-v8a/gambatte_libretro_android.so.zip
-          unzip -q gambatte_libretro_android.so.zip && rm gambatte_libretro_android.so.zip
-          wget -q https://buildbot.libretro.com/nightly/android/latest/arm64-v8a/mgba_libretro_android.so.zip
-          unzip -q mgba_libretro_android.so.zip && rm mgba_libretro_android.so.zip
+          wget -q https://buildbot.libretro.com/nightly/android/latest/arm64-v8a/fceumm_libretro_android.so.zip && unzip -q fceumm_libretro_android.so.zip && rm fceumm_libretro_android.so.zip
+          wget -q https://buildbot.libretro.com/nightly/android/latest/arm64-v8a/gambatte_libretro_android.so.zip && unzip -q gambatte_libretro_android.so.zip && rm gambatte_libretro_android.so.zip
+          wget -q https://buildbot.libretro.com/nightly/android/latest/arm64-v8a/mgba_libretro_android.so.zip && unzip -q mgba_libretro_android.so.zip && rm mgba_libretro_android.so.zip
 
-      - name: Compilar con Gradle
-        run: |
-          chmod +x gradlew || true
-          gradle assembleDebug || ./gradlew assembleDebug
+      - name: Compilar APK
+        run: gradle assembleDebug
 
       - name: Subir APK
         uses: actions/upload-artifact@v4

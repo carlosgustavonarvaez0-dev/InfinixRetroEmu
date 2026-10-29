@@ -10,30 +10,31 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: 1. Configurar Java JDK 17
+      - name: Configurar Java JDK 17
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: 2. Instalar Gradle 8.5 Exacto
-         uses: gradle/actions/setup-gradle@v3
-        with:
-          gradle-version: '8.5'
-
-      - name: 3. Generar Proyecto Android Completo y Verificado
+      - name: Generar Proyecto Android Verificado
         shell: python3 {0}
         run: |
           import pathlib
 
-          files = {
-              "gradle.properties": """
+          def write_file(path, text):
+              p = pathlib.Path(path)
+              p.parent.mkdir(parents=True, exist_ok=True)
+              lines = [l[10:] if l.startswith("          ") else l for l in text.splitlines()]
+              p.write_text("\n".join(lines).strip() + "\n", encoding="utf-8")
+
+          write_file("gradle.properties", """
           org.gradle.jvmargs=-Xmx4096m -Dfile.encoding=UTF-8
           android.useAndroidX=true
           android.nonTransitiveRClass=true
           kotlin.code.style=official
-          """,
-              "settings.gradle.kts": """
+          """)
+
+          write_file("settings.gradle.kts", """
           pluginManagement {
               repositories {
                   google()
@@ -50,14 +51,16 @@ jobs:
           }
           rootProject.name = "InfinixRetroEmu"
           include(":app")
-          """,
-              "build.gradle.kts": """
+          """)
+
+          write_file("build.gradle.kts", """
           plugins {
               id("com.android.application") version "8.2.2" apply false
               id("org.jetbrains.kotlin.android") version "1.9.22" apply false
           }
-          """,
-              "app/build.gradle.kts": """
+          """)
+
+          write_file("app/build.gradle.kts", """
           plugins {
               id("com.android.application")
               id("org.jetbrains.kotlin.android")
@@ -109,8 +112,10 @@ jobs:
               implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
               implementation("androidx.documentfile:documentfile:1.0.1")
           }
-          """,
-              "app/src/main/AndroidManifest.xml": """<?xml version="1.0" encoding="utf-8"?>
+          """)
+
+          write_file("app/src/main/AndroidManifest.xml", """
+          <?xml version="1.0" encoding="utf-8"?>
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
               <uses-permission android:name="android.permission.VIBRATE" />
               <uses-feature android:name="android.hardware.gamepad" android:required="false" />
@@ -133,8 +138,9 @@ jobs:
                   </activity>
               </application>
           </manifest>
-          """,
-              "app/src/main/java/com/infinix/retroemu/core/LibretroWrapper.kt": """
+          """)
+
+          write_file("app/src/main/java/com/infinix/retroemu/core/LibretroWrapper.kt", """
           package com.infinix.retroemu.core
 
           import java.util.concurrent.atomic.AtomicInteger
@@ -151,9 +157,7 @@ jobs:
                   inputState.set(bitmask)
               }
 
-              fun stepFrame(isRewinding: Boolean, speedMultiplier: Int) {
-                  // Control de fotogramas y Rewind en los 8GB de RAM
-              }
+              fun stepFrame(isRewinding: Boolean, speedMultiplier: Int) {}
 
               fun setShaderFilter(filterType: Int) {
                   shaderFilter.set(filterType)
@@ -171,8 +175,9 @@ jobs:
               const val BTN_L      = 1 shl 10
               const val BTN_R      = 1 shl 11
           }
-          """,
-              "app/src/main/java/com/infinix/retroemu/data/RomScanner.kt": """
+          """)
+
+          write_file("app/src/main/java/com/infinix/retroemu/data/RomScanner.kt", """
           package com.infinix.retroemu.data
 
           import android.content.Context
@@ -234,7 +239,7 @@ jobs:
               }
 
               suspend fun prepareRomForExecution(rom: RomItem): String = withContext(Dispatchers.IO) {
-                  val cacheFile = File(context.cacheDir, "active_rom_${rom.system.name}.bin")
+                  val cacheFile = File(context.cacheDir, "active_rom_" + rom.system.name + ".bin")
                   context.contentResolver.openInputStream(rom.fileUri)?.use { input ->
                       FileOutputStream(cacheFile).use { output ->
                           if (rom.isZipped) {
@@ -259,8 +264,9 @@ jobs:
                   return RomItem(file.uri.toString(), cleanTitle, file.uri, system, isZipped, entryName)
               }
           }
-          """,
-              "app/src/main/java/com/infinix/retroemu/ui/EmulatorScreen.kt": """
+          """)
+
+          write_file("app/src/main/java/com/infinix/retroemu/ui/EmulatorScreen.kt", """
           package com.infinix.retroemu.ui
 
           import android.view.HapticFeedbackConstants
@@ -301,10 +307,10 @@ jobs:
           fun EmulatorScreen(system: ConsoleSystem, romTitle: String) {
               val localView = LocalView.current
               val density = LocalDensity.current.density
-              var isFastForward by remember { mutableStateOf(false) }
-              var isRewinding by remember { mutableStateOf(false) }
-              var currentFilter by remember { mutableStateOf(VisualFilter.PIXEL_PERFECT) }
-              var activeBitmask by remember { mutableIntStateOf(0) }
+              val isFastForward = remember { mutableStateOf(false) }
+              val isRewinding = remember { mutableStateOf(false) }
+              val currentFilter = remember { mutableStateOf(VisualFilter.PIXEL_PERFECT) }
+              val activeBitmask = remember { mutableStateOf(0) }
 
               val screenWidthPx = 2644
               val screenHeightPx = 1208
@@ -316,11 +322,11 @@ jobs:
               fun updateButtonState(buttonMask: Int, isPressed: Boolean) {
                   if (isPressed) {
                       localView.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-                      activeBitmask = activeBitmask or buttonMask
+                      activeBitmask.value = activeBitmask.value or buttonMask
                   } else {
-                      activeBitmask = activeBitmask and buttonMask.inv()
+                      activeBitmask.value = activeBitmask.value and buttonMask.inv()
                   }
-                  LibretroWrapper.updateInputBitmask(activeBitmask)
+                  LibretroWrapper.updateInputBitmask(activeBitmask.value)
               }
 
               Row(
@@ -331,7 +337,7 @@ jobs:
                   Box(modifier = Modifier.width(bezelWidthDp).fillMaxHeight().padding(16.dp).alpha(0.85f)) {
                       Row(modifier = Modifier.align(Alignment.TopStart), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                           if (system == ConsoleSystem.GBA) ShoulderButton("L") { updateButtonState(LibretroWrapper.BTN_L, it) }
-                          QoLChipButton("Rewind", isRewinding) { isRewinding = it; LibretroWrapper.stepFrame(it, 1) }
+                          QoLChipButton("Rewind", isRewinding.value) { isRewinding.value = it; LibretroWrapper.stepFrame(it, 1) }
                       }
                       DPadControl(Modifier.align(Alignment.Center)) { mask, pressed -> updateButtonState(mask, pressed) }
                       PillButton("SELECT", Modifier.align(Alignment.BottomEnd)) { updateButtonState(LibretroWrapper.BTN_SELECT, it) }
@@ -346,14 +352,14 @@ jobs:
                           FilledTonalButton(
                               onClick = {
                                   val entries = VisualFilter.values()
-                                  currentFilter = entries[(currentFilter.ordinal + 1) % entries.size]
-                                  LibretroWrapper.setShaderFilter(currentFilter.id)
+                                  currentFilter.value = entries[(currentFilter.value.ordinal + 1) % entries.size]
+                                  LibretroWrapper.setShaderFilter(currentFilter.value.id)
                               },
                               contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
-                          ) { Text(currentFilter.label, fontSize = 11.sp) }
-                          QoLChipButton(if (isFastForward) "4x ON" else "1x", isFastForward) {
-                              isFastForward = !isFastForward
-                              LibretroWrapper.stepFrame(false, if (isFastForward) 4 else 1)
+                          ) { Text(currentFilter.value.label, fontSize = 11.sp) }
+                          QoLChipButton(if (isFastForward.value) "4x ON" else "1x", isFastForward.value) {
+                              isFastForward.value = !isFastForward.value
+                              LibretroWrapper.stepFrame(false, if (isFastForward.value) 4 else 1)
                           }
                           if (system == ConsoleSystem.GBA) ShoulderButton("R") { updateButtonState(LibretroWrapper.BTN_R, it) }
                       }
@@ -410,8 +416,9 @@ jobs:
                   detectTapGestures(onPress = { onPress(true); tryAwaitRelease(); onPress(false) })
               }, contentAlignment = Alignment.Center) { Text(label, color = Color.Gray, fontSize = 16.sp) }
           }
-          """,
-              "app/src/main/java/com/infinix/retroemu/ui/LibraryScreen.kt": """
+          """)
+
+          write_file("app/src/main/java/com/infinix/retroemu/ui/LibraryScreen.kt", """
           package com.infinix.retroemu.ui
 
           import android.net.Uri
@@ -445,11 +452,11 @@ jobs:
               onSelectFolder: (Uri) -> Unit,
               onLaunchGame: (RomItem, Boolean) -> Unit
           ) {
-              var selectedTab by remember { mutableIntStateOf(0) }
+              val selectedTab = remember { mutableStateOf(0) }
               val tabs = listOf("Todos", "NES", "Game Boy / GBC", "GBA")
               val folderPickerLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri -> uri?.let { onSelectFolder(it) } }
-              val filteredRoms = remember(roms, selectedTab) {
-                  when (selectedTab) {
+              val filteredRoms = remember(roms, selectedTab.value) {
+                  when (selectedTab.value) {
                       1 -> roms.filter { it.system == ConsoleSystem.NES }
                       2 -> roms.filter { it.system == ConsoleSystem.GB_GBC }
                       3 -> roms.filter { it.system == ConsoleSystem.GBA }
@@ -492,9 +499,9 @@ jobs:
                               }
                           }
                       }
-                      ScrollableTabRow(selectedTabIndex = selectedTab, containerColor = Color(0xFF121214), contentColor = Color.White, edgePadding = 16.dp) {
+                      ScrollableTabRow(selectedTabIndex = selectedTab.value, containerColor = Color(0xFF121214), contentColor = Color.White, edgePadding = 16.dp) {
                           tabs.forEachIndexed { idx, title ->
-                              Tab(selected = selectedTab == idx, onClick = { selectedTab = idx }, text = { Text(title) })
+                              Tab(selected = selectedTab.value == idx, onClick = { selectedTab.value = idx }, text = { Text(title) })
                           }
                       }
                       if (filteredRoms.isEmpty()) {
@@ -524,8 +531,9 @@ jobs:
                   Text(rom.title, color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.align(Alignment.BottomStart))
               }
           }
-          """,
-              "app/src/main/java/com/infinix/retroemu/MainActivity.kt": """
+          """)
+
+          write_file("app/src/main/java/com/infinix/retroemu/MainActivity.kt", """
           package com.infinix.retroemu
 
           import android.content.Context
@@ -553,7 +561,7 @@ jobs:
 
           class MainActivity : ComponentActivity() {
               private lateinit var romScanner: RomScanner
-              private var activeRomState by mutableStateOf<RomItem?>(null)
+              private val activeRomState = mutableStateOf<RomItem?>(null)
 
               override fun onCreate(savedInstanceState: Bundle?) {
                   super.onCreate(savedInstanceState)
@@ -561,16 +569,16 @@ jobs:
                   extractBundledCores()
 
                   setContent {
-                      var romList by remember { mutableStateOf<List<RomItem>>(emptyList()) }
-                      var lastPlayed by remember { mutableStateOf<RomItem?>(null) }
-                      val currentRom = activeRomState
+                      val romList = remember { mutableStateOf<List<RomItem>>(emptyList()) }
+                      val lastPlayed = remember { mutableStateOf<RomItem?>(null) }
+                      val currentRom = activeRomState.value
 
                       LaunchedEffect(Unit) {
                           val prefs = getSharedPreferences("retro_prefs", Context.MODE_PRIVATE)
                           prefs.getString("saved_folder_uri", null)?.let { uriStr ->
-                              romList = romScanner.scanDirectory(Uri.parse(uriStr))
+                              romList.value = romScanner.scanDirectory(Uri.parse(uriStr))
                               val lastId = prefs.getString("last_played_id", null)
-                              lastPlayed = romList.find { it.id == lastId }
+                              lastPlayed.value = romList.value.find { it.id == lastId }
                           }
                       }
 
@@ -578,12 +586,12 @@ jobs:
                           requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
                           showSystemBars(true)
                           LibraryScreen(
-                              roms = romList,
-                              lastPlayedRom = lastPlayed,
+                              roms = romList.value,
+                              lastPlayedRom = lastPlayed.value,
                               onSelectFolder = { uri ->
                                   contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
                                   getSharedPreferences("retro_prefs", Context.MODE_PRIVATE).edit().putString("saved_folder_uri", uri.toString()).apply()
-                                  lifecycleScope.launch { romList = romScanner.scanDirectory(uri) }
+                                  lifecycleScope.launch { romList.value = romScanner.scanDirectory(uri) }
                               },
                               onLaunchGame = { rom, _ ->
                                   lifecycleScope.launch {
@@ -591,8 +599,8 @@ jobs:
                                       val corePath = getCorePathForSystem(rom.system)
                                       if (LibretroWrapper.loadCoreAndGame(corePath, readyRomPath)) {
                                           getSharedPreferences("retro_prefs", Context.MODE_PRIVATE).edit().putString("last_played_id", rom.id).apply()
-                                          lastPlayed = rom
-                                          activeRomState = rom
+                                          lastPlayed.value = rom
+                                          activeRomState.value = rom
                                       }
                                   }
                               }
@@ -600,7 +608,7 @@ jobs:
                       } else {
                           requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
                           showSystemBars(false)
-                          BackHandler { activeRomState = null }
+                          BackHandler { activeRomState.value = null }
                           EmulatorScreen(system = currentRom.system, romTitle = currentRom.title)
                       }
                   }
@@ -611,7 +619,7 @@ jobs:
                   listOf("fceumm_libretro_android.so", "gambatte_libretro_android.so", "mgba_libretro_android.so").forEach { fileName ->
                       val targetFile = File(coresDir, fileName)
                       if (!targetFile.exists()) {
-                          runCatching { assets.open("cores/$fileName").use { input -> FileOutputStream(targetFile).use { output -> input.copyTo(output) } } }
+                          runCatching { assets.open("cores/" + fileName).use { input -> FileOutputStream(targetFile).use { output -> input.copyTo(output) } } }
                       }
                   }
               }
@@ -634,18 +642,11 @@ jobs:
                   }
               }
           }
-          """
-          }
+          """)
 
-          for path, content in files.items():
-              p = pathlib.Path(path)
-              p.parent.mkdir(parents=True, exist_ok=True)
-              lines = [line[10:] if line.startswith("          ") else line for line in content.splitlines()]
-              p.write_text("\n".join(lines).strip() + "\n", encoding="utf-8")
+          print("Proyecto escrito sin errores")
 
-          print("Archivos verificados y escritos correctamente")
-
-      - name: 4. Descargar nucleos Libretro y Compilar APK
+      - name: Descargar Gradle 8.5, Nucleos Libretro y Compilar APK
         run: |
           mkdir -p app/src/main/assets/cores
           cd app/src/main/assets/cores
@@ -653,10 +654,12 @@ jobs:
           curl -sL https://buildbot.libretro.com/nightly/android/latest/arm64-v8a/gambatte_libretro_android.so.zip -o gb.zip && unzip -q gb.zip && rm gb.zip
           curl -sL https://buildbot.libretro.com/nightly/android/latest/arm64-v8a/mgba_libretro_android.so.zip -o gba.zip && unzip -q gba.zip && rm gba.zip
           cd ../../../..
+          curl -sL https://services.gradle.org/distributions/gradle-8.5-bin.zip -o gradle.zip
+          unzip -q gradle.zip
           yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses > /dev/null || true
-          gradle assembleDebug --no-daemon --stacktrace
+          ./gradle-8.5/bin/gradle assembleDebug --no-daemon --stacktrace
 
-      - name: 5. Subir APK Terminado
+      - name: Entregar APK Terminado
         uses: actions/upload-artifact@v4
         with:
           name: Infinix-RetroEmu-APK

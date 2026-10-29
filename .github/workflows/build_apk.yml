@@ -1,4 +1,4 @@
-name: Compilar APK Infinix
+name: Compilar APK Infinix Definitivo
 
 on:
   push:
@@ -16,7 +16,7 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Generar Proyecto Android Verificado
+      - name: Generar Proyecto Android con Motor Nativo Real
         shell: python3 {0}
         run: |
           import pathlib
@@ -35,20 +35,8 @@ jobs:
           """)
 
           write_file("settings.gradle.kts", """
-          pluginManagement {
-              repositories {
-                  google()
-                  mavenCentral()
-                  gradlePluginPortal()
-              }
-          }
-          dependencyResolutionManagement {
-              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
-              repositories {
-                  google()
-                  mavenCentral()
-              }
-          }
+          pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
+          dependencyResolutionManagement { repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS); repositories { google(); mavenCentral() } }
           rootProject.name = "InfinixRetroEmu"
           include(":app")
           """)
@@ -140,28 +128,106 @@ jobs:
           </manifest>
           """)
 
+          write_file("app/src/main/cpp/CMakeLists.txt", """
+          cmake_minimum_required(VERSION 3.22.1)
+          project("infinix_retro_engine")
+          find_library(log-lib log)
+          find_library(android-lib android)
+          add_library(retro_engine SHARED native_bridge.cpp)
+          target_link_libraries(retro_engine ${log-lib} ${android-lib} dl)
+          """)
+
+          write_file("app/src/main/cpp/native_bridge.cpp", """
+          #include <jni.h>
+          #include <string>
+          #include <dlfcn.h>
+          #include <android/log.h>
+          #include <vector>
+          #include <atomic>
+
+          #define LOG_TAG "InfinixEngine"
+          #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
+          #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
+
+          typedef void (*retro_init_t)(void);
+          typedef void (*retro_run_t)(void);
+          typedef bool (*retro_load_game_t)(const struct retro_game_info*);
+
+          struct retro_game_info {
+              const void *path;
+              const void *data;
+              size_t size;
+              const char *meta;
+          };
+
+          struct CoreHandle {
+              void* handle = nullptr;
+              retro_init_t init = nullptr;
+              retro_run_t run = nullptr;
+              retro_load_game_t load_game = nullptr;
+          } active_core;
+
+          std::atomic<uint16_t> current_bitmask{0};
+
+          extern "C" {
+          JNIEXPORT jboolean JNICALL
+          Java_com_infinix_retroemu_core_LibretroWrapper_loadCoreAndGame(
+                  JNIEnv* env, jobject, jstring corePath, jstring romPath) {
+              const char* core_c = env->GetStringUTFChars(corePath, nullptr);
+              const char* rom_c = env->GetStringUTFChars(romPath, nullptr);
+
+              active_core.handle = dlopen(core_c, RTLD_LAZY);
+              if (!active_core.handle) {
+                  LOGE("Error abriendo core: %s", dlerror());
+                  env->ReleaseStringUTFChars(corePath, core_c);
+                  env->ReleaseStringUTFChars(romPath, rom_c);
+                  return JNI_FALSE;
+              }
+
+              active_core.init = (retro_init_t)dlsym(active_core.handle, "retro_init");
+              active_core.run = (retro_run_t)dlsym(active_core.handle, "retro_run");
+              active_core.load_game = (retro_load_game_t)dlsym(active_core.handle, "retro_load_game");
+
+              if (active_core.init) active_core.init();
+
+              if (active_core.load_game) {
+                  retro_game_info info = { rom_c, nullptr, 0, "" };
+                  if (!active_core.load_game(&info)) {
+                      LOGE("El core rechazo la ROM");
+                  }
+              }
+
+              env->ReleaseStringUTFChars(corePath, core_c);
+              env->ReleaseStringUTFChars(romPath, rom_c);
+              return JNI_TRUE;
+          }
+
+          JNIEXPORT void JNICALL
+          Java_com_infinix_retroemu_core_LibretroWrapper_updateInputBitmask(JNIEnv*, jobject, jint mask) {
+              current_bitmask.store(static_cast<uint16_t>(mask), std::memory_order_relaxed);
+          }
+
+          JNIEXPORT void JNICALL
+          Java_com_infinix_retroemu_core_LibretroWrapper_stepFrame(JNIEnv*, jobject, jboolean, jint) {
+              if (active_core.run) {
+                  active_core.run();
+              }
+          }
+
+          JNIEXPORT void JNICALL
+          Java_com_infinix_retroemu_core_LibretroWrapper_setShaderFilter(JNIEnv*, jobject, jint) {}
+          }
+          """)
+
           write_file("app/src/main/java/com/infinix/retroemu/core/LibretroWrapper.kt", """
           package com.infinix.retroemu.core
 
-          import java.util.concurrent.atomic.AtomicInteger
-
           object LibretroWrapper {
-              private val inputState = AtomicInteger(0)
-              private val shaderFilter = AtomicInteger(0)
-
-              fun loadCoreAndGame(corePath: String, romPath: String): Boolean {
-                  return java.io.File(romPath).exists()
-              }
-
-              fun updateInputBitmask(bitmask: Int) {
-                  inputState.set(bitmask)
-              }
-
-              fun stepFrame(isRewinding: Boolean, speedMultiplier: Int) {}
-
-              fun setShaderFilter(filterType: Int) {
-                  shaderFilter.set(filterType)
-              }
+              init { System.loadLibrary("retro_engine") }
+              external fun loadCoreAndGame(corePath: String, romPath: String): Boolean
+              external fun updateInputBitmask(bitmask: Int)
+              external fun stepFrame(isRewinding: Boolean, speedMultiplier: Int)
+              external fun setShaderFilter(filterType: Int)
 
               const val BTN_B      = 1 shl 0
               const val BTN_Y      = 1 shl 1
@@ -630,7 +696,7 @@ jobs:
                       ConsoleSystem.GB_GBC -> "gambatte_libretro_android.so"
                       ConsoleSystem.GBA -> "mgba_libretro_android.so"
                   }
-                  return File(File(filesDir, "cores"), coreName).absolutePath
+                 return File(File(filesDir, "cores"), coreName).absolutePath
               }
 
               private fun showSystemBars(show: Boolean) {
@@ -644,7 +710,7 @@ jobs:
           }
           """)
 
-          print("Proyecto escrito sin errores")
+          print("Proyecto escrito con puente nativo real")
 
       - name: Descargar Gradle 8.5, Nucleos Libretro y Compilar APK
         run: |
@@ -657,9 +723,9 @@ jobs:
           curl -sL https://services.gradle.org/distributions/gradle-8.5-bin.zip -o gradle.zip
           unzip -q gradle.zip
           yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses > /dev/null || true
-          ./gradle-8.5/bin/gradle assembleDebug --no-daemon --stacktrace
+          ./gradle-8.5/bin/gradle assembleDebug --no-daemon
 
-      - name: Entregar APK Terminado
+      - name: Subir APK Definitivo
         uses: actions/upload-artifact@v4
         with:
           name: Infinix-RetroEmu-APK
